@@ -1,12 +1,7 @@
-const express = require('express');
+import app from "./src/app.js";
 
-const app = express();
-app.use(express.json());
+const PORT = process.env.PORT || 5000;
 
-app.get('/', (req, res) => {
-    res.send('RetailMind Backend Running 🚀');
-});
-
-app.listen(3000, () => {
-    console.log('Server running on port 3000');
+app.listen(PORT, () => {
+  console.log(`RetailMind API running on port ${PORT}`);
 });
