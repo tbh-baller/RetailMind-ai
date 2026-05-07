@@ -5,7 +5,10 @@ import {
   deleteSale,
   getSalesSummary,
   bulkUploadSales,
-  exportSalesCsv
+  exportSalesCsv,
+  getBestSellers,
+  getSlowMovers,
+  getCategoryPerformance
 } from "../controllers/sales.controller.js";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { validateCreateSale } from "../middleware/validateSales.js";
@@ -17,6 +20,15 @@ const router = Router();
 
 // GET /api/sales/export - export sales as CSV for ML forecasting
 router.get("/export", asyncHandler(exportSalesCsv));
+
+// GET /api/sales/analytics/best-sellers - top 5 products by quantity
+router.get("/analytics/best-sellers", asyncHandler(getBestSellers));
+
+// GET /api/sales/analytics/slow-movers - bottom 5 products by quantity
+router.get("/analytics/slow-movers", asyncHandler(getSlowMovers));
+
+// GET /api/sales/analytics/category-performance - revenue by category
+router.get("/analytics/category-performance", asyncHandler(getCategoryPerformance));
 
 // GET /api/sales with optional filters
 router.get("/", asyncHandler(getSales));

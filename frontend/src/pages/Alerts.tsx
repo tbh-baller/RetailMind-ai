@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import { useEffect, useState } from "react";
 import { getAlerts } from "@/services/api";
 
-const iconMap = { low: AlertTriangle, expiry: Clock, spike: TrendingUp };
+const iconMap = { low: AlertTriangle, expiry: Clock, expired: Clock, spike: TrendingUp };
 
 export default function Alerts() {
   const dispatch = useAppDispatch();
@@ -52,26 +52,28 @@ export default function Alerts() {
       <div className="space-y-2">
         {loading && <div className="glow-card p-6 text-sm text-muted-foreground text-center">Loading alerts...</div>}
         {!loading && alerts.map(a => {
-          const Icon = iconMap[a.type];
-          const sevCls = a.severity === "high" ? "bg-destructive/15 text-destructive border-destructive/30"
-            : a.severity === "medium" ? "bg-warning/15 text-warning border-warning/30"
+          const Icon = iconMap[a?.type] || AlertTriangle;
+          const severity = a?.severity || "low";
+          const sevCls = severity === "high" ? "bg-destructive/15 text-destructive border-destructive/30"
+            : severity === "medium" ? "bg-warning/15 text-warning border-warning/30"
             : "bg-info/15 text-info border-info/30";
+          const createdDate = a?.createdAt ? new Date(a.createdAt).toLocaleString() : "Unknown";
           return (
-            <div key={a.id} className={cn("glow-card p-4 flex items-center gap-4 transition-opacity", a.read && "opacity-50")}>
+            <div key={a?.id || Math.random()} className={cn("glow-card p-4 flex items-center gap-4 transition-opacity", a?.read && "opacity-50")}>
               <div className={cn("w-10 h-10 rounded-lg border flex items-center justify-center shrink-0", sevCls)}>
                 <Icon className="w-5 h-5" />
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
                   <span className={cn("text-[10px] uppercase font-semibold tracking-wider px-1.5 py-0.5 rounded border", sevCls)}>
-                    {a.severity}
+                    {severity}
                   </span>
-                  <span className="text-[10px] text-muted-foreground">{new Date(a.createdAt).toLocaleString()}</span>
+                  <span className="text-[10px] text-muted-foreground">{createdDate}</span>
                 </div>
-                <div className="text-sm font-medium mt-1">{a.message}</div>
+                <div className="text-sm font-medium mt-1">{a?.message || "No message"}</div>
               </div>
-              {!a.read && (
-                <Button variant="ghost" size="sm" className="gap-2" onClick={() => dispatch(alertsActions.markRead(a.id))}>
+              {!a?.read && (
+                <Button variant="ghost" size="sm" className="gap-2" onClick={() => a?.id && dispatch(alertsActions.markRead(a.id))}>
                   <Check className="w-3.5 h-3.5" />Mark read
                 </Button>
               )}

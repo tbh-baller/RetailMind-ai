@@ -474,3 +474,64 @@ function escapeCsvValue(value) {
   }
   return text;
 }
+
+/**
+ * Get best-selling products (top 5 by total quantity sold)
+ * Returns: [ { name, units }, ... ]
+ */
+export async function getBestSellers() {
+  const query = `
+    SELECT
+      p.name,
+      SUM(s.quantity)::int AS units
+    FROM sales s
+    JOIN products p ON p.id = s.product_id
+    WHERE s.is_deleted = false
+    GROUP BY p.name
+    ORDER BY units DESC
+    LIMIT 5
+  `;
+
+  const result = await pool.query(query);
+  return result.rows;
+}
+
+/**
+ * Get slow-moving products (bottom 5 by total quantity sold)
+ * Returns: [ { name, units }, ... ]
+ */
+export async function getSlowMovers() {
+  const query = `
+    SELECT
+      p.name,
+      SUM(s.quantity)::int AS units
+    FROM sales s
+    JOIN products p ON p.id = s.product_id
+    WHERE s.is_deleted = false
+    GROUP BY p.name
+    ORDER BY units ASC
+    LIMIT 5
+  `;
+
+  const result = await pool.query(query);
+  return result.rows;
+}
+
+/**
+ * Get category performance (revenue by category)
+ * Returns: [ { category, revenue }, ... ]
+ */
+export async function getCategoryPerformance() {
+  const query = `
+    SELECT
+      p.category,
+      SUM(s.quantity * p.price)::numeric AS revenue
+    FROM sales s
+    JOIN products p ON p.id = s.product_id
+    WHERE s.is_deleted = false
+    GROUP BY p.category
+  `;
+
+  const result = await pool.query(query);
+  return result.rows;
+}

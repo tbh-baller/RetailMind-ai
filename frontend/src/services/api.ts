@@ -89,6 +89,56 @@ export interface ForecastPoint {
   forecast: number | null;
 }
 
+export interface SKUForecast {
+  sku: string;
+  forecast_7_days: number;
+}
+
+export interface ProcurementRecommendation {
+  productId: string;
+  productName: string;
+  sku: string;
+  currentStock: number;
+  reorderLevel: number;
+  stockOutDays?: number;
+  recommendedQty: number;
+  priority: "High" | "Medium" | "Low";
+  sevenDayVelocity: number;
+  forecastDemand: number;
+  aiReasoning: string;
+}
+
+export interface ProcurementOrder {
+  id: string;
+  productId: string;
+  productName: string;
+  sku: string;
+  supplierId: string;
+  supplierName: string;
+  quantity: number;
+  unitPrice: number;
+  totalCost: number;
+  estimatedDelivery?: string;
+  status: "Pending" | "Approved" | "Shipped" | "Delivered";
+  aiReasoning?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface SupplierProduct {
+  id: string;
+  supplierId: string;
+  productId: string;
+  supplierName: string;
+  productName: string;
+  sku: string;
+  unitPrice: number;
+  leadTimeDays: number;
+  reliabilityScore: number;
+  stockQty: number;
+  minimumOrderQty: number;
+}
+
 export interface ProductForecast {
   productId: string;
   productName: string;
@@ -288,25 +338,73 @@ function normalizeSale(item: any): Sale {
 // PRODUCTS
 export async function getProducts(): Promise<Product[]>;
 export async function getProducts(page: number, limit?: number, search?: string): Promise<PaginatedProducts>;
-export async function getProducts(page?: number, limit = 10, search = ""): Promise<Product[] | PaginatedProducts> {
-  const params = new URLSearchParams();
 
+export async function getProducts(
+  page?: number,
+  limit?: number,
+  search = ""
+): Promise<Product[] | PaginatedProducts> {
+
+  // PAGINATED MODE
   if (page !== undefined) {
+    const params = new URLSearchParams();
+
     params.set("page", String(page));
-    params.set("limit", String(limit));
+
+    if (limit !== undefined) {
+      params.set("limit", String(limit));
+    }
+
+    if (search.trim()) {
+      params.set("search", search.trim());
+    }
+
+    const payload = await request<unknown>(`/products?${params.toString()}`);
+
+    return normalizeProductsResponse(payload, page);
   }
 
-  if (search.trim()) {
-    params.set("search", search.trim());
+  // FETCH ALL PRODUCTS MODE
+  const firstPayload = await request<unknown>("/products");
+
+  const firstResponse = normalizeProductsResponse(firstPayload, 1);
+
+  let allProducts: Product[] = [...firstResponse.data];
+
+  console.log("[API DEBUG] First page products:", firstResponse.data.length);
+  console.log("[API DEBUG] Total pages:", firstResponse.totalPages);
+
+  // FETCH REMAINING PAGES
+  if (firstResponse.totalPages > 1) {
+
+    const requests = [];
+
+    for (let p = 2; p <= firstResponse.totalPages; p++) {
+      console.log("[API DEBUG] Fetching page:", p);
+
+      requests.push(
+        request<unknown>(`/products?page=${p}`)
+      );
+    }
+
+    const responses = await Promise.all(requests);
+
+    responses.forEach((payload, index) => {
+      const response = normalizeProductsResponse(payload, index + 2);
+
+      console.log(
+        `[API DEBUG] Page ${index + 2} products:`,
+        response.data.length
+      );
+
+      allProducts = [...allProducts, ...response.data];
+    });
   }
 
-  const query = params.toString();
-  const payload = await request<unknown>(query ? `/products?${query}` : "/products");
-  const productsResponse = normalizeProductsResponse(payload, page ?? 1);
+  console.log("[API DEBUG] FINAL TOTAL PRODUCTS:", allProducts.length);
 
-  return page === undefined ? productsResponse.data : productsResponse;
+  return allProducts;
 }
-
 export async function addProduct(product: ProductCreatePayload): Promise<Product> {
   const category = String(product.category || "").trim().toLowerCase();
 
@@ -410,6 +508,33 @@ export async function getSales(limit = 1000, offset = 0): Promise<Sale[]> {
   return Array.isArray(data) ? data.map(normalizeSale) : [];
 }
 
+export async function uploadSalesCsv(file: File): Promise<{ insertedCount?: number; uploadedRows?: number; message?: string }> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const response = await fetch(`${API_BASE_URL}/sales/bulk-upload`, {
+    method: "POST",
+    body: formData,
+  });
+
+  const contentType = response.headers.get("content-type") || "";
+  let data: any = {};
+
+  if (contentType.includes("application/json")) {
+    data = await response.json();
+  } else {
+    const text = await response.text();
+    data = text ? { message: text } : {};
+  }
+
+  if (!response.ok) {
+    const errorMessage = data?.message || data?.error || `Upload failed with status ${response.status}`;
+    throw new Error(errorMessage);
+  }
+
+  return data;
+}
+
 // OPTIONAL (stub for future ML)
 export async function getSalesSummary(): Promise<any[]> {
   const payload = await request<ApiEnvelope<any[]>>("/sales/summary");
@@ -427,30 +552,203 @@ export async function getAlerts(): Promise<AlertItem[]> {
   return Array.isArray(data) ? data : [];
 }
 
-export async function getSuppliers(): Promise<Supplier[]> {
-  return [];
-}
-
-export async function getForecast(): Promise<ForecastPoint[]> {
-  return [];
+export async function getForecast(): Promise<SKUForecast[]> {
+  try {
+    const payload = await request<{ data?: SKUForecast[] }>("/forecast");
+    const response = payload as any;
+    const data = response?.data || [];
+    
+    if (!Array.isArray(data)) {
+      console.warn("getForecast: Response data is not an array", response);
+      return [];
+    }
+    
+    console.log("getForecast: Successfully retrieved", data.length, "forecasts");
+    return data;
+  } catch (error) {
+    console.error("Forecast API error:", error instanceof ApiError ? { status: error.status, message: error.message } : error);
+    return [];
+  }
 }
 
 export async function getReorderSuggestions(): Promise<ReorderSuggestion[]> {
   return [];
 }
 
-export async function getSupplierQuotes(productId?: string): Promise<Record<string, SupplierQuote[]> | SupplierQuote[]> {
-  return productId ? [] : {};
-}
-
 export async function getBestSellers(): Promise<ProductUnits[]> {
-  return [];
+  try {
+    const response = await request<{ data?: ProductUnits[] }>("/sales/analytics/best-sellers");
+    const data = (response as any)?.data || [];
+    console.log("getBestSellers: Retrieved", data.length, "items");
+    return Array.isArray(data) ? data : [];
+  } catch (error) {
+    console.error("getBestSellers API error:", error instanceof ApiError ? { status: error.status, message: error.message } : error);
+    return [];
+  }
 }
 
 export async function getSlowMovers(): Promise<ProductUnits[]> {
-  return [];
+  try {
+    const response = await request<{ data?: ProductUnits[] }>("/sales/analytics/slow-movers");
+    const data = (response as any)?.data || [];
+    console.log("getSlowMovers: Retrieved", data.length, "items");
+    return Array.isArray(data) ? data : [];
+  } catch (error) {
+    console.error("getSlowMovers API error:", error instanceof ApiError ? { status: error.status, message: error.message } : error);
+    return [];
+  }
 }
 
 export async function getCategoryPerformance(): Promise<CategoryPerformance[]> {
-  return [];
+  try {
+    const response = await request<{ data?: CategoryPerformance[] }>("/sales/analytics/category-performance");
+    const data = (response as any)?.data || [];
+    console.log("getCategoryPerformance: Retrieved", data.length, "items");
+    return Array.isArray(data) ? data : [];
+  } catch (error) {
+    console.error("getCategoryPerformance API error:", error instanceof ApiError ? { status: error.status, message: error.message } : error);
+    return [];
+  }
 }
+
+// SUPPLIERS
+export async function getSuppliers(): Promise<Supplier[]> {
+  try {
+    const response = await request<{ data?: Supplier[] }>("/suppliers");
+    const data = (response as any)?.data || [];
+    console.log("getSuppliers: Retrieved", data.length, "suppliers");
+    return Array.isArray(data) ? data : [];
+  } catch (error) {
+    console.error("getSuppliers API error:", error instanceof ApiError ? { status: error.status, message: error.message } : error);
+    return [];
+  }
+}
+
+export async function createSupplier(supplier: { name: string; type: "Local" | "External"; contact?: string; rating?: number }): Promise<Supplier> {
+  const response = await request<{ data?: Supplier }>("/suppliers", {
+    method: "POST",
+    body: supplier,
+  });
+  return (response as any)?.data as Supplier;
+}
+
+export async function updateSupplier(id: string, supplier: Partial<Supplier>): Promise<Supplier> {
+  const response = await request<{ data?: Supplier }>(`/suppliers/${id}`, {
+    method: "PUT",
+    body: supplier,
+  });
+  return (response as any)?.data as Supplier;
+}
+
+export async function deleteSupplier(id: string): Promise<void> {
+  await request<void>(`/suppliers/${id}`, { method: "DELETE" });
+}
+
+export async function getSupplierProducts(supplierId: string): Promise<SupplierProduct[]> {
+  try {
+    const response = await request<{ data?: SupplierProduct[] }>(`/suppliers/${supplierId}/products`);
+    const data = (response as any)?.data || [];
+    return Array.isArray(data) ? data : [];
+  } catch (error) {
+    console.error("getSupplierProducts API error:", error);
+    return [];
+  }
+}
+
+export async function addSupplierProduct(
+  supplierId: string,
+  productId: string,
+  pricing: {
+    unitPrice: number;
+    leadTimeDays?: number;
+    reliabilityScore?: number;
+    stockQty?: number;
+    minimumOrderQty?: number;
+  }
+): Promise<SupplierProduct> {
+  const response = await request<{ data?: SupplierProduct }>(`/suppliers/${supplierId}/products/${productId}`, {
+    method: "POST",
+    body: pricing,
+  });
+  return (response as any)?.data as SupplierProduct;
+}
+
+export async function removeSupplierProduct(supplierId: string, productId: string): Promise<void> {
+  await request<void>(`/suppliers/${supplierId}/products/${productId}`, { method: "DELETE" });
+}
+
+export async function getProductSuppliers(productId: string): Promise<SupplierProduct[]> {
+  try {
+    const response = await request<{ data?: SupplierProduct[] }>(`/suppliers/products/${productId}/suppliers`);
+    const data = (response as any)?.data || [];
+    return Array.isArray(data) ? data : [];
+  } catch (error) {
+    console.error("getProductSuppliers API error:", error);
+    return [];
+  }
+}
+
+// PROCUREMENT
+export async function getProcurementRecommendations(): Promise<ProcurementRecommendation[]> {
+  try {
+    const response = await request<{ data?: ProcurementRecommendation[] }>("/procurement/recommendations");
+    const data = (response as any)?.data || [];
+    console.log("getProcurementRecommendations: Retrieved", data.length, "recommendations");
+    return Array.isArray(data) ? data : [];
+  } catch (error) {
+    console.error("getProcurementRecommendations API error:", error instanceof ApiError ? { status: error.status, message: error.message } : error);
+    return [];
+  }
+}
+
+export async function getProcurementOrders(productId?: string): Promise<ProcurementOrder[]> {
+  try {
+    const url = productId 
+      ? `/procurement/orders?productId=${productId}`
+      : "/procurement/orders";
+    
+    const response = await request<{ data?: ProcurementOrder[] }>(url);
+    const data = (response as any)?.data || [];
+    console.log("getProcurementOrders: Retrieved", data.length, "orders");
+    return Array.isArray(data) ? data : [];
+  } catch (error) {
+    console.error("getProcurementOrders API error:", error instanceof ApiError ? { status: error.status, message: error.message } : error);
+    return [];
+  }
+}
+
+export async function getProcurementOrderById(orderId: string): Promise<ProcurementOrder | null> {
+  try {
+    const response = await request<{ data?: ProcurementOrder }>(`/procurement/orders/${orderId}`);
+    const data = (response as any)?.data;
+    return data || null;
+  } catch (error) {
+    console.error("getProcurementOrderById API error:", error instanceof ApiError ? { status: error.status, message: error.message } : error);
+    return null;
+  }
+}
+
+export async function createProcurementOrder(order: {
+  productId: string;
+  supplierId: string;
+  quantity: number;
+  aiReasoning?: string;
+}): Promise<ProcurementOrder> {
+  const response = await request<{ data?: ProcurementOrder }>("/procurement/orders", {
+    method: "POST",
+    body: order,
+  });
+  return (response as any)?.data as ProcurementOrder;
+}
+
+export async function updateProcurementOrderStatus(
+  id: string, 
+  status: "Pending" | "Approved" | "Shipped" | "Delivered"
+): Promise<ProcurementOrder> {
+  const response = await request<{ data?: ProcurementOrder }>(`/procurement/orders/${id}`, {
+    method: "PUT",
+    body: { status },
+  });
+  return (response as any)?.data as ProcurementOrder;
+}
+

@@ -194,7 +194,10 @@ export async function bulkUploadSales(req, res) {
 
     // Parse CSV from buffer
     const csvText = req.file.buffer.toString("utf-8");
-    const lines = csvText.trim().split("\n");
+    const lines = csvText
+  .replace(/^\uFEFF/, "")
+  .trim()
+  .split(/\r?\n/);
 
     if (lines.length < 2) {
       const err = new Error("CSV must have headers and at least one row");
@@ -219,7 +222,9 @@ export async function bulkUploadSales(req, res) {
       const line = lines[i].trim();
       if (!line) continue; // Skip empty lines
 
-      const cells = line.split(",").map(c => c.trim());
+      const cells = line
+      .split(",")
+      .map(c => c.replace(/"/g, "").trim());
       const row = {};
 
       for (let j = 0; j < headers.length; j++) {
@@ -255,9 +260,64 @@ export async function bulkUploadSales(req, res) {
 
     res.status(201).json({
       message: "Bulk upload completed",
-      uploadedCount,
+      insertedCount: uploadedCount,
+      uploadedRows: uploadedCount,
       errorCount: errors.length,
       errors: errors.length > 0 ? errors : undefined
+    });
+  } catch (error) {
+    throw error;
+  }
+}
+
+/**
+ * GET /api/sales/analytics/best-sellers
+ * Get top 5 best-selling products by total quantity sold
+ * Returns: [ { name, units }, ... ]
+ */
+export async function getBestSellers(req, res) {
+  try {
+    const data = await salesService.getBestSellers();
+    
+    res.status(200).json({
+      data: data,
+      count: data.length
+    });
+  } catch (error) {
+    throw error;
+  }
+}
+
+/**
+ * GET /api/sales/analytics/slow-movers
+ * Get bottom 5 slow-moving products by total quantity sold
+ * Returns: [ { name, units }, ... ]
+ */
+export async function getSlowMovers(req, res) {
+  try {
+    const data = await salesService.getSlowMovers();
+    
+    res.status(200).json({
+      data: data,
+      count: data.length
+    });
+  } catch (error) {
+    throw error;
+  }
+}
+
+/**
+ * GET /api/sales/analytics/category-performance
+ * Get revenue by category
+ * Returns: [ { category, revenue }, ... ]
+ */
+export async function getCategoryPerformance(req, res) {
+  try {
+    const data = await salesService.getCategoryPerformance();
+    
+    res.status(200).json({
+      data: data,
+      count: data.length
     });
   } catch (error) {
     throw error;

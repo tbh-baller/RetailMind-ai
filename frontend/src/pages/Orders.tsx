@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import '../styles/Orders.css';
-import { createSale, deleteSale, exportSalesCsv, getProducts, getSales, type Product, type Sale } from '../services/api';
+import { createSale, deleteSale, exportSalesCsv, getProducts, getSales, uploadSalesCsv, type Product, type Sale } from '../services/api';
 
 interface CartItem {
   product_id: string;
@@ -41,6 +41,12 @@ const Orders: React.FC = () => {
   const [salesSearch, setSalesSearch] = useState('');
   const [historyPage, setHistoryPage] = useState(1);
 
+  // CSV Upload state
+  const [isUploadingCsv, setIsUploadingCsv] = useState(false);
+  const [uploadError, setUploadError] = useState('');
+  const [uploadMessage, setUploadMessage] = useState('');
+  const [showUploadSuccess, setShowUploadSuccess] = useState(false);
+
   // ============================================================================
   // FETCH PRODUCTS
   // ============================================================================
@@ -51,8 +57,10 @@ const Orders: React.FC = () => {
       setProductsError('');
       const res = await getProducts() as Product[] | { data?: Product[] };
       const productList = Array.isArray(res) ? res : res.data || [];
-      console.log("Loaded products:", productList);
-      setProducts(Array.isArray(productList) ? productList : []);
+      const productsArray = Array.isArray(productList) ? productList : [];
+      console.log("[DEBUG] Total products fetched from backend:", productsArray.length);
+      console.log("[DEBUG] Loaded products:", productsArray);
+      setProducts(productsArray);
       setApiAvailable(true);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to load products';
@@ -73,9 +81,9 @@ const Orders: React.FC = () => {
     try {
       setSalesLoading(true);
       setSalesError('');
-      const data = await getSales();
-      console.log('Sales data:', data);
-      setSales(Array.isArray(data) ? data : []);
+      const response: any = await getSales();
+      console.log('Sales data:', response);
+      setSales(Array.isArray(response.data) ? response.data : []);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to load order history';
       setSalesError(errorMessage);
@@ -136,19 +144,7 @@ const Orders: React.FC = () => {
     return products.find((p) => p.id === sale.product_id || p.sku === sale.sku);
   };
 
-  /**
-   * Filter products by search term (name or sku)
-   */
-  const getFilteredProducts = (): Product[] => {
-    if (!searchTerm.trim()) {
-      return products;
-    }
 
-    const term = searchTerm.toLowerCase();
-    return products.filter(
-      (p) => p.name.toLowerCase().includes(term) || p.sku?.toLowerCase().includes(term)
-    );
-  };
 
   /**
    * Check if item exists in cart (by product_id and sale_date)
@@ -419,6 +415,53 @@ const Orders: React.FC = () => {
     }
   };
 
+  /**
+   * Handle CSV file upload
+   */
+  const handleCsvFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    
+    if (!file) {
+      return;
+    }
+
+    // Validate file type
+    if (!file.name.toLowerCase().endsWith('.csv') && file.type !== 'text/csv') {
+      setUploadError('Please select a valid CSV file');
+      return;
+    }
+
+    setIsUploadingCsv(true);
+    setUploadError('');
+    setUploadMessage('');
+    setShowUploadSuccess(false);
+
+    try {
+      const response = await uploadSalesCsv(file);
+      const rowCount = response.insertedCount ?? response.uploadedRows ?? 0;
+      
+      setUploadMessage(`✓ Uploaded ${rowCount} sales row${rowCount !== 1 ? 's' : ''}`);
+      setShowUploadSuccess(true);
+
+      // Reload sales history
+      await loadSales();
+      window.dispatchEvent(new CustomEvent('retailmind:sales-updated'));
+      localStorage.setItem('retailmind:sales-updated', String(Date.now()));
+
+      // Hide success message after 5 seconds
+      setTimeout(() => {
+        setShowUploadSuccess(false);
+      }, 5000);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Failed to upload CSV';
+      setUploadError(`CSV upload failed: ${errorMessage}`);
+    } finally {
+      setIsUploadingCsv(false);
+      // Reset file input
+      event.target.value = '';
+    }
+  };
+
   // ============================================================================
   // SUBMIT ORDERS
   // ============================================================================
@@ -529,7 +572,26 @@ const Orders: React.FC = () => {
 
   const historyPageSize = 10;
   const selectedProduct = selectedProductId ? findProductById(selectedProductId) : null;
-  const filteredProducts = getFilteredProducts();
+  const filteredProducts = useMemo(() => {
+    if (!searchTerm.trim()) {
+      console.log("[DEBUG] Showing ALL products:", products.length);
+      return products;
+    }
+
+    const term = searchTerm.toLowerCase().trim();
+
+    const filtered = products.filter((p) => {
+      return (
+        p.name?.toLowerCase().includes(term) ||
+        p.sku?.toLowerCase().includes(term) ||
+        p.category?.toLowerCase().includes(term)
+      );
+    });
+
+    console.log("[DEBUG] Filtered products:", filtered.length);
+
+    return filtered;
+  }, [products, searchTerm]);
   const todayDate = getTodayDate();
   const maxDate = getMaxDate();
   const cartTotalItems = cart.reduce((sum, item) => sum + item.qty_sold, 0);
@@ -606,16 +668,20 @@ const Orders: React.FC = () => {
               )}
               {showDropdown && filteredProducts.length > 0 && (
                 <div className="dropdown-menu">
-                  {filteredProducts.map((product) => (
-                    <div
-                      key={product.id}
-                      className={`dropdown-item ${selectedProductId === product.id ? 'selected' : ''}`}
-                      onClick={() => handleProductSelect(product)}
-                    >
-                      <div className="dropdown-item-name">{product.name}</div>
-                      <div className="dropdown-item-sku">SKU: {product.sku}</div>
-                    </div>
-                  ))}
+                  {(() => {
+                    console.log("[DEBUG] Rendering dropdown with", filteredProducts.length, "products");
+                    return filteredProducts.map((product) => (
+                      <div
+                        key={product.id}
+                        className={`dropdown-item ${selectedProductId === product.id ? 'selected' : ''}`}
+                        onClick={() => handleProductSelect(product)}
+                      >
+                        <div className="dropdown-item-name">{product.name}</div>
+                        <div className="dropdown-item-sku">SKU: {product.sku}</div>
+                        {product.category && <div className="dropdown-item-category">Category: {product.category}</div>}
+                      </div>
+                    ));
+                  })()}
                 </div>
               )}
               {showDropdown && filteredProducts.length === 0 && (
@@ -801,13 +867,55 @@ const Orders: React.FC = () => {
           />
         </div>
 
-        {salesError && (
-          <div className="error-message">
-            <span className="error-icon">âš </span>
-            {salesError}
-          </div>
-        )}
+        {/* CSV Upload Section */}
+        <div className="csv-upload-section">
+          <label htmlFor="csv-upload" className="csv-upload-button">
+            <input
+              id="csv-upload"
+              type="file"
+              accept=".csv"
+              onChange={handleCsvFileUpload}
+              disabled={isUploadingCsv}
+              style={{ display: 'none' }}
+            />
+            <button
+              type="button"
+              disabled={isUploadingCsv}
+              className={`btn btn-secondary ${isUploadingCsv ? 'loading' : ''}`}
+              onClick={() => document.getElementById('csv-upload')?.click()}
+            >
+              {isUploadingCsv ? (
+                <>
+                  <span className="submit-spinner">⟳</span>
+                  Uploading...
+                </>
+              ) : (
+                <>📤 Upload Sales CSV</>
+              )}
+            </button>
+          </label>
 
+          {uploadError && (
+            <div className="error-message">
+              <span className="error-icon">⚠</span>
+              <span>{uploadError}</span>
+            </div>
+          )}
+
+          {showUploadSuccess && (
+            <div className="success-message">
+              <span className="success-icon">✓</span>
+              {uploadMessage}
+            </div>
+          )}
+
+          {salesError && (
+            <div className="error-message">
+              <span className="error-icon">⚠</span>
+              {salesError}
+            </div>
+          )}
+        </div>
         <div className="history-table-wrapper">
           <table className="history-table">
             <thead>

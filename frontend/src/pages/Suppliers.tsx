@@ -1,111 +1,181 @@
 import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/common/PageHeader";
-import { useAppDispatch, useAppSelector, suppliersActions } from "@/store";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
-import { Plus, Star, Info } from "lucide-react";
+import { Plus, Star, Info, Truck } from "lucide-react";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { getProducts, getSupplierQuotes, getSuppliers, type Product, type SupplierQuote } from "@/services/api";
+import {
+  getProducts,
+  getSuppliers,
+  getProductSuppliers,
+  createSupplier,
+  type Product,
+  type SupplierProduct,
+} from "@/services/api";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { useCanEdit } from "@/hooks/useRole";
 
 export default function Suppliers() {
-  const dispatch = useAppDispatch();
-  const suppliers = useAppSelector(s => s.suppliers.items);
   const canEdit = useCanEdit();
-  const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ name: "", type: "Local", contact: "" });
-  const [selectedProduct, setSelectedProduct] = useState("");
+  const [suppliers, setSuppliers] = useState<any[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
-  const [quotesByProduct, setQuotesByProduct] = useState<Record<string, SupplierQuote[]>>({});
+  const [selectedProduct, setSelectedProduct] = useState("");
+  const [quotes, setQuotes] = useState<SupplierProduct[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ name: "", type: "Local", contact: "" });
 
-  const internal = suppliers.filter(s => s.type === "Local");
-  const external = suppliers.filter(s => s.type === "External");
-  const quotes = selectedProduct ? quotesByProduct[selectedProduct] || [] : [];
+  const internal = suppliers.filter((s) => s.type === "Local");
+  const external = suppliers.filter((s) => s.type === "External");
 
   useEffect(() => {
     let active = true;
 
-    async function loadSuppliers() {
+    async function loadData() {
       try {
         setLoading(true);
         setError(null);
-        const [suppliersRes, productsRes, quotesRes] = await Promise.all([
+        const [suppliersRes, productsRes] = await Promise.all([
           getSuppliers(),
           getProducts(),
-          getSupplierQuotes(),
         ]);
         if (!active) return;
 
-        const normalizedQuotes = Array.isArray(quotesRes) ? {} : quotesRes;
-        const ids = Object.keys(normalizedQuotes);
-        dispatch(suppliersActions.setSuppliers(suppliersRes));
-        setProducts(productsRes);
-        setQuotesByProduct(normalizedQuotes);
-        setSelectedProduct(current => current || ids[0] || productsRes[0]?.id || "");
-      } catch {
-        if (active) setError("Could not load suppliers.");
+        const normalizedSuppliers = Array.isArray(suppliersRes) ? suppliersRes : [];
+        const normalizedProducts = Array.isArray(productsRes) ? productsRes : [];
+
+        setSuppliers(normalizedSuppliers);
+        setProducts(normalizedProducts);
+        if (normalizedProducts.length > 0) {
+          setSelectedProduct(normalizedProducts[0].id);
+        }
+      } catch (err) {
+        console.error("Failed to load data:", err);
+        if (active) setError("Could not load suppliers or products");
       } finally {
         if (active) setLoading(false);
       }
     }
 
-    loadSuppliers();
+    loadData();
     return () => { active = false; };
-  }, [dispatch]);
+  }, []);
+
+  useEffect(() => {
+    if (!selectedProduct) return;
+    let active = true;
+
+    async function loadQuotes() {
+      try {
+        const quotesRes = await getProductSuppliers(selectedProduct);
+        if (!active) return;
+        setQuotes(Array.isArray(quotesRes) ? quotesRes : []);
+      } catch (err) {
+        console.error("Failed to load quotes:", err);
+      }
+    }
+
+    loadQuotes();
+    return () => { active = false; };
+  }, [selectedProduct]);
+
+  const product = products.find((p) => p.id === selectedProduct);
+  const cheapest = quotes.length ? quotes.reduce((a, b) => a.unitPrice < b.unitPrice ? a : b) : null;
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Suppliers & Price Comparison"
-        subtitle={loading ? "Loading suppliers..." : "Manage supplier network and compare prices across platforms"}
+        subtitle={loading ? "Loading suppliers..." : "Manage supplier network and compare prices"}
         action={
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
-              <Button disabled={!canEdit} className="gap-2"><Plus className="w-4 h-4" />Add Supplier</Button>
+              <Button disabled={!canEdit} className="gap-2">
+                <Plus className="w-4 h-4" />
+                Add Supplier
+              </Button>
             </DialogTrigger>
             <DialogContent>
-              <DialogHeader><DialogTitle>Add Supplier</DialogTitle></DialogHeader>
+              <DialogHeader>
+                <DialogTitle>Add Supplier</DialogTitle>
+              </DialogHeader>
               <div className="space-y-3">
-                <div><Label>Name</Label><Input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></div>
-                <div><Label>Type</Label>
-                  <Select value={form.type} onValueChange={v => setForm({ ...form, type: v })}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
+                <div>
+                  <Label>Name</Label>
+                  <Input
+                    value={form.name}
+                    onChange={(e) => setForm({ ...form, name: e.target.value })}
+                    placeholder="Supplier name"
+                  />
+                </div>
+                <div>
+                  <Label>Type</Label>
+                  <Select value={form.type} onValueChange={(v) => setForm({ ...form, type: v })}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="Local">Local</SelectItem>
-                      <SelectItem value="External">External</SelectItem>
+                      <SelectItem value="Local">Local Distributor</SelectItem>
+                      <SelectItem value="External">External/Quick-Commerce</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
-                <div><Label>Contact</Label><Input value={form.contact} onChange={e => setForm({ ...form, contact: e.target.value })} /></div>
+                <div>
+                  <Label>Contact</Label>
+                  <Input
+                    value={form.contact}
+                    onChange={(e) => setForm({ ...form, contact: e.target.value })}
+                    placeholder="Email or phone"
+                  />
+                </div>
               </div>
               <DialogFooter>
-                <Button variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
-                <Button onClick={() => {
-                  dispatch(suppliersActions.addSupplier({
-                    id: `s-${Date.now()}`, name: form.name, type: form.type as any,
-                    contact: form.contact, rating: 4.0, products: 0,
-                  }));
-                  toast.success("Supplier added");
-                  setOpen(false); setForm({ name: "", type: "Local", contact: "" });
-                }}>Add</Button>
+                <Button variant="ghost" onClick={() => setOpen(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  onClick={async () => {
+                    try {
+                      await createSupplier({
+                        name: form.name,
+                        type: form.type as "Local" | "External",
+                        contact: form.contact,
+                      });
+                      toast.success("Supplier added");
+                      setOpen(false);
+                      setForm({ name: "", type: "Local", contact: "" });
+                      // Reload suppliers
+                      const suppliersRes = await getSuppliers();
+                      setSuppliers(Array.isArray(suppliersRes) ? suppliersRes : []);
+                    } catch (err) {
+                      console.error("Failed to add supplier:", err);
+                      toast.error("Failed to add supplier");
+                    }
+                  }}
+                >
+                  Add
+                </Button>
               </DialogFooter>
             </DialogContent>
           </Dialog>
         }
       />
 
-      {error && <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">{error}</div>}
+      {error && (
+        <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          {error}
+        </div>
+      )}
 
       <div className="flex items-center gap-2 text-xs text-info bg-info/10 px-3 py-2 rounded-lg border border-info/30 w-fit">
-        <Info className="w-3.5 h-3.5" />This system uses API/cached data. No scraping is used.
+        <Info className="w-3.5 h-3.5" />
+        Real suppliers from database + mock external pricing
       </div>
 
       <Tabs defaultValue="comparison">
@@ -117,47 +187,84 @@ export default function Suppliers() {
 
         <TabsContent value="comparison" className="mt-4 space-y-4">
           <div className="glow-card p-4 flex items-center gap-3">
-            <Label className="text-sm">Compare prices for:</Label>
+            <Label className="text-sm">Product:</Label>
             <Select value={selectedProduct} onValueChange={setSelectedProduct}>
-              <SelectTrigger className="w-64 bg-secondary/60"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="w-80 bg-secondary/60">
+                <SelectValue />
+              </SelectTrigger>
               <SelectContent>
-                {Object.keys(quotesByProduct).map(id => {
-                  const p = products.find(x => x.id === id);
-                  return <SelectItem key={id} value={id}>{p?.name || id}</SelectItem>;
-                })}
+                {products.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>
+                    {p.image} {p.name}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
 
+          {product && (
+            <div className="glow-card p-4 border border-border/50 bg-secondary/20">
+              <div className="text-sm text-muted-foreground">
+                {product.sku} · {product.category}
+              </div>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {quotes.map(q => {
-              const cheapest = quotes.reduce((a, b) => a.price < b.price ? a : b);
-              return (
-                <div key={q.supplier} className="glow-card p-5 hover:border-primary/40 transition-colors">
-                  <div className="flex justify-between items-start mb-3">
-                    <div>
-                      <div className="font-semibold">{q.supplier}</div>
-                      <Badge variant="outline" className="text-[10px] mt-1">{q.type}</Badge>
+            {quotes.map((q) => (
+              <div
+                key={q.id}
+                className="glow-card p-5 hover:border-primary/40 transition-colors relative"
+              >
+                {q === cheapest && (
+                  <Badge className="absolute top-3 right-3 bg-info/20 text-info border-info/30">
+                    Cheapest
+                  </Badge>
+                )}
+                <div className="mb-3">
+                  <div className="font-semibold text-base">{q.supplierName}</div>
+                  <Badge variant="outline" className="text-[10px] mt-1">
+                    Local
+                  </Badge>
+                </div>
+                <div className="text-3xl font-bold tabular-nums text-primary">
+                  ₹{q.unitPrice.toFixed(2)}
+                </div>
+                <div className="text-xs text-muted-foreground mt-1">per unit</div>
+                <div className="grid grid-cols-2 gap-3 mt-4 pt-4 border-t border-border">
+                  <div>
+                    <div className="text-[10px] text-muted-foreground uppercase flex items-center gap-1">
+                      <Truck className="w-3 h-3" />
+                      Delivery
                     </div>
-                    {q === cheapest && <Badge className="bg-info/20 text-info border-info/30">Cheapest</Badge>}
+                    <div className="text-sm font-medium">
+                      {q.leadTimeDays < 1
+                        ? `${Math.round(q.leadTimeDays * 24)}h`
+                        : `${q.leadTimeDays.toFixed(1)}d`}
+                    </div>
                   </div>
-                  <div className="text-3xl font-bold tabular-nums text-primary">₹{q.price.toFixed(2)}</div>
-                  <div className="text-xs text-muted-foreground mt-1">per unit</div>
-                  <div className="grid grid-cols-2 gap-3 mt-4 pt-4 border-t border-border">
-                    <div>
-                      <div className="text-[10px] text-muted-foreground uppercase">Delivery</div>
-                      <div className="text-sm font-medium">{q.deliveryDays < 1 ? `${q.deliveryDays * 24}h` : `${q.deliveryDays}d`}</div>
+                  <div>
+                    <div className="text-[10px] text-muted-foreground uppercase">Stock</div>
+                    <div className="text-sm font-medium">{q.stockQty} units</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-muted-foreground uppercase flex items-center gap-1">
+                      <Star className="w-3 h-3" />
+                      Reliability
                     </div>
-                    <div>
-                      <div className="text-[10px] text-muted-foreground uppercase">Stock</div>
-                      <div className="text-sm font-medium">{q.availability}</div>
-                    </div>
+                    <div className="text-sm font-medium">{q.reliabilityScore.toFixed(1)}/5</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-muted-foreground uppercase">Min Order</div>
+                    <div className="text-sm font-medium">{q.minimumOrderQty} units</div>
                   </div>
                 </div>
-              );
-            })}
+              </div>
+            ))}
             {!loading && quotes.length === 0 && (
-              <div className="text-sm text-muted-foreground py-12 text-center lg:col-span-3">No quotes available.</div>
+              <div className="text-sm text-muted-foreground py-12 text-center lg:col-span-3">
+                No suppliers available for this product.
+              </div>
             )}
           </div>
         </TabsContent>
@@ -165,6 +272,7 @@ export default function Suppliers() {
         <TabsContent value="internal" className="mt-4">
           <SupplierTable suppliers={internal} />
         </TabsContent>
+
         <TabsContent value="external" className="mt-4">
           <SupplierTable suppliers={external} />
         </TabsContent>
@@ -187,21 +295,33 @@ function SupplierTable({ suppliers }: { suppliers: any[] }) {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {suppliers.map(s => (
-            <TableRow key={s.id}>
+          {suppliers.map((s) => (
+            <TableRow key={s.id} className="hover:bg-secondary/40">
               <TableCell className="font-medium">{s.name}</TableCell>
-              <TableCell><Badge variant="outline">{s.type}</Badge></TableCell>
+              <TableCell>
+                <Badge variant="outline">{s.type}</Badge>
+              </TableCell>
               <TableCell className="text-sm text-muted-foreground">{s.contact}</TableCell>
-              <TableCell className="text-right tabular-nums">{s.products}</TableCell>
+              <TableCell className="text-right tabular-nums text-sm">{s.productCount || 0}</TableCell>
               <TableCell>
                 <div className="flex items-center gap-1 text-warning">
-                  <Star className="w-3.5 h-3.5 fill-current" /><span className="text-sm font-medium">{s.rating}</span>
+                  <Star className="w-3.5 h-3.5 fill-current" />
+                  <span className="text-sm font-medium">{(s.rating || 4).toFixed(1)}</span>
                 </div>
               </TableCell>
             </TableRow>
           ))}
+          {suppliers.length === 0 && (
+            <TableRow>
+              <TableCell colSpan={5} className="text-center text-sm text-muted-foreground py-8">
+                No suppliers of this type.
+              </TableCell>
+            </TableRow>
+          )}
         </TableBody>
       </Table>
     </div>
   );
 }
+
+

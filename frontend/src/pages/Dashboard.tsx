@@ -4,7 +4,7 @@ import { alertsActions, inventoryActions, useAppDispatch, useAppSelector } from 
 import { KpiCard } from "@/components/common/KpiCard";
 import { PageHeader } from "@/components/common/PageHeader";
 import { ProductImage } from "@/components/common/ProductImage";
-import { getProducts, getSales, type ForecastPoint, type Product, type ReorderSuggestion, type Sale } from "@/services/api";
+import { getProducts, getSales, getForecast, type ForecastPoint, type Product, type ReorderSuggestion, type Sale, type SKUForecast } from "@/services/api";
 import {
   ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid, Line, LineChart,
 } from "recharts";
@@ -34,12 +34,12 @@ function formatChartDate(day: string) {
   });
 }
 
-function buildForecastChartData(sales: Sale[]): ForecastPoint[] {
+function buildForecastChartData(sales: Sale[] = [], mlForecasts: SKUForecast[] = []): ForecastPoint[] {
   const chartData = new Map<string, ForecastPoint>();
 
   for (const sale of sales) {
     const quantity = Number(sale.qty_sold ?? 0);
-    const saleDate = sale.sale_date || sale.createdAt;
+    const saleDate = sale.sale_date ?? sale.createdAt ?? sale.saleDate ?? sale.created_at ?? "";
     const parsedDate = new Date(saleDate);
 
     if (!Number.isFinite(quantity) || quantity <= 0 || Number.isNaN(parsedDate.getTime())) {
@@ -47,9 +47,31 @@ function buildForecastChartData(sales: Sale[]): ForecastPoint[] {
     }
 
     const day = toDateKey(parsedDate);
-    const point = chartData.get(day) ?? { day, actual: 0, forecast: null };
-    point.actual = Number(point.actual ?? 0) + quantity;
+    const point = chartData.get(day) ?? { day, actual: 0, forecast: 0 };
+    point.actual += quantity;
     chartData.set(day, point);
+  }
+
+  const forecastValues = Array.isArray(mlForecasts)
+    ? mlForecasts.map((f) => Math.max(0, Number(f?.forecast_7_days ?? 0)))
+    : [];
+
+  const totalForecastDemand = forecastValues.reduce((sum, value) => sum + value, 0);
+
+  if (totalForecastDemand > 0) {
+    const dailyForecast = Math.ceil(totalForecastDemand / 7);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    for (let i = 1; i <= 7; i++) {
+      const forecastDate = new Date(today);
+      forecastDate.setDate(today.getDate() + i);
+      const day = toDateKey(forecastDate);
+
+      const point = chartData.get(day) ?? { day, actual: 0, forecast: 0 };
+      point.forecast = dailyForecast;
+      chartData.set(day, point);
+    }
   }
 
   return capExtremeChartValues(Array.from(chartData.values()).sort((a, b) => a.day.localeCompare(b.day)));
@@ -105,19 +127,40 @@ function buildAiRecommendations(products: Product[], sales: Sale[]): DashboardRe
         priority = product.stock <= product.reorderLevel / 2 ? "High" : "Medium";
       }
 
+      // Calculate recommended quantity with proper business logic
+      const forecastDemand = Math.ceil(sevenDayVelocity * 7);
+      let recommendedQty = 0;
+
+      // Only recommend reorder if stock is at/below reorder level
+      if (product.stock <= product.reorderLevel) {
+        recommendedQty = Math.max(
+          forecastDemand,
+          product.reorderLevel * 2 - product.stock
+        );
+      } 
+      // Or if forecast demand exceeds current stock (for healthy products with increasing demand)
+      else if (forecastDemand > product.stock) {
+        recommendedQty = forecastDemand - product.stock;
+      }
+
       return {
         productId: product.id,
         productName: product.name,
         currentStock: product.stock,
         reorderLevel: product.reorderLevel,
         stockOutDays: Number.isFinite(daysUntilStockout) ? Math.ceil(daysUntilStockout) : undefined,
-        recommendedQty: Math.max((product.reorderLevel * 2) - product.stock, Math.ceil(sevenDayVelocity * 7), 0),
+        recommendedQty,
         priority,
         message,
         score: priority === "High" ? 3 : priority === "Medium" ? 2 : 1,
       };
     })
-    .filter((item) => item.message && item.score > 0)
+    .filter(
+      (item) =>
+        item.message &&
+        item.score > 0 &&
+        item.recommendedQty > 0
+    )
     .sort((a, b) => {
       if (b.score !== a.score) {
         return b.score - a.score;
@@ -166,23 +209,33 @@ export default function Dashboard() {
       let productsRes: Product[] = [];
       let suggestionsRes: DashboardRecommendation[] = [];
       let salesRes: Sale[] = [];
+      let mlForecasts: SKUForecast[] = [];
 
-      try {
-        const response = await getProducts(1, 1000);
-        productsRes = response.data;
-        console.log("Products:", productsRes);
-      } catch (error) {
-        console.warn("Dashboard products API failed:", error);
-        productsRes = [];
+      const [productsResult, salesResult, forecastResult] = await Promise.allSettled([
+        getProducts(1, 1000),
+        getSales(1000),
+        getForecast(),
+      ]);
+
+      if (productsResult.status === "fulfilled") {
+        productsRes = productsResult.value.data ?? [];
+        console.log("Products:", productsRes.length);
+      } else {
+        console.warn("Dashboard products API failed:", productsResult.reason);
       }
 
-      try {
-        salesRes = await getSales(1000);
-        console.log("Sales data:", salesRes);
-      } catch (error) {
-        console.warn("Dashboard sales API failed:", error);
-        salesRes = [];
-        console.log("Sales data:", salesRes);
+      if (salesResult.status === "fulfilled") {
+        salesRes = salesResult.value;
+        console.log("Sales data:", salesRes.length);
+      } else {
+        console.warn("Dashboard sales API failed:", salesResult.reason);
+      }
+
+      if (forecastResult.status === "fulfilled") {
+        mlForecasts = Array.isArray(forecastResult.value) ? forecastResult.value : [];
+        console.log("ML Forecasts:", mlForecasts.length);
+      } else {
+        console.warn("Dashboard forecast API failed:", forecastResult.reason);
       }
 
       if (!active) return;
@@ -230,7 +283,7 @@ for (const product of productsRes) {
 
 dispatch(inventoryActions.setProducts(productsRes));
 dispatch(alertsActions.setAlerts(generatedAlerts));
-setForecast(buildForecastChartData(salesRes));
+setForecast(buildForecastChartData(salesRes, mlForecasts));
 setReorderSuggestions(suggestionsRes);
       setSales(salesRes);
       setLoading(false);
@@ -278,8 +331,9 @@ sevenDaysLater.setDate(today.getDate() + 7);
     return sum + price * Number(sale.qty_sold || 0);
   }, 0);
   const pendingReorders = reorderSuggestions.length;
-  const hasForecastData = forecast.some(point => Number(point.actual ?? 0) > 0 || Number(point.forecast ?? 0) > 0);
-  const hasActualSalesData = forecast.some(point => Number(point.actual ?? 0) > 0);
+  const chartData = Array.isArray(forecast) ? forecast : [];
+  const hasChartData = chartData.some(point => Number(point.actual ?? 0) > 0 || Number(point.forecast ?? 0) > 0);
+  const hasActualSalesData = chartData.some(point => Number(point.actual ?? 0) > 0);
 
   return (
     <div className="space-y-6">
@@ -321,17 +375,13 @@ sevenDaysLater.setDate(today.getDate() + 7);
           <div className="h-72">
             {loading ? (
               <div className="h-full rounded-lg bg-secondary/40 animate-pulse" />
-            ) : !hasSalesData ? (
+            ) : !hasChartData ? (
               <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
-                No sales data
-              </div>
-            ) : !hasForecastData ? (
-              <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
-                No sales data
+                No forecast data available
               </div>
             ) : (
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={forecast} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                <LineChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
                   <XAxis dataKey="day" tickFormatter={formatChartDate} stroke="hsl(var(--muted-foreground))" fontSize={12} />
                   <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} />
